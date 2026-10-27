@@ -11,15 +11,17 @@ from pathlib import Path
 
 import streamlit as st
 
-from busca import IMAGEM_RE, MotorBusca, carregar_bases
+from busca import IMAGEM_RE, MotorBusca, carregar_bases, carregar_topicos
+from importador import FORMATOS, converter, escapar_markdown
 
 PASTA = Path(__file__).parent
 SCORE_MINIMO = 4.5      # abaixo disso consideramos que não há resposta na base
 SCORE_CONFIANTE = 8.0   # acima disso a resposta principal é exibida como "encontrada"
 TITULO_APP = "Assistente Dúvidas Faturamento"
 
-# Validações criadas pelo app ficam numa base própria, ao lado das demais.
-ARQUIVO_VALIDACOES = (PASTA / "data" if (PASTA / "data").is_dir() else PASTA) / "Validacoes_Cadastradas.md"
+# Validações criadas e documentos importados pelo app ficam ao lado das demais bases.
+PASTA_BASES = PASTA / "data" if (PASTA / "data").is_dir() else PASTA
+ARQUIVO_VALIDACOES = PASTA_BASES / "Validacoes_Cadastradas.md"
 CABECALHO_VALIDACOES = "# Validações cadastradas\n\n## Validações cadastradas pela equipe\n"
 
 st.set_page_config(
@@ -55,7 +57,9 @@ if not BASES:
 TITULOS_BASES, TOPICOS, MOTOR = carregar_motor(tuple(BASES))
 
 
-# ---------------------------------------------------------------- novas validações
+# ---------------------------------------------------------------- gravação no GitHub
+# O disco do Streamlit Cloud é apagado a cada reinício; com GITHUB_TOKEN nos Secrets,
+# o que for cadastrado ou importado é gravado também no repositório.
 def segredo(nome: str, padrao=None):
     try:
         return st.secrets.get(nome, padrao)
@@ -63,58 +67,118 @@ def segredo(nome: str, padrao=None):
         return padrao
 
 
-def montar_validacao(duvida: str, causa: str, tratativa: str) -> str:
-    def limpar(texto: str) -> str:
-        # Linha começando com "#" viraria um novo tópico na base: escapa.
-        return "\n".join("\\" + l.lstrip() if l.lstrip().startswith("#") else l for l in texto.strip().splitlines())
-
-    bloco = f"\n#### {' '.join(duvida.split())}\n\n"
-    if causa.strip():
-        bloco += f"**Causa:** {limpar(causa)}\n\n"
-    return bloco + f"**Solução:** {limpar(tratativa)}\n"
-
-
-def _github(metodo: str, url: str, token: str, dados: dict | None = None) -> dict:
+def _github(metodo: str, caminho: Path, dados: dict | None = None) -> dict:
+    repo = segredo("GITHUB_REPO", "francineim/assistente-rejeicoes-nfe")
+    ramo = segredo("GITHUB_BRANCH", "main")
+    url = f"https://api.github.com/repos/{repo}/contents/{caminho.relative_to(PASTA).as_posix()}"
+    if metodo == "GET":
+        url += f"?ref={ramo}"
+    else:
+        dados = {**dados, "branch": ramo}
     req = urllib.request.Request(
         url,
         method=metodo,
         data=json.dumps(dados).encode() if dados else None,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        headers={"Authorization": f"Bearer {segredo('GITHUB_TOKEN')}", "Accept": "application/vnd.github+json"},
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)
+
+
+def github_ler(caminho: Path) -> tuple[str | None, str | None]:
+    """(conteúdo, sha) do arquivo no repositório, ou (None, None) se ainda não existe."""
+    try:
+        atual = _github("GET", caminho)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, None
+        raise
+    return base64.b64decode(atual.get("content") or "").decode("utf-8"), atual["sha"]
+
+
+def github_gravar(caminho: Path, conteudo: str, mensagem: str, sha: str | None):
+    dados = {"message": mensagem, "content": base64.b64encode(conteudo.encode("utf-8")).decode()}
+    if sha:
+        dados["sha"] = sha
+    _github("PUT", caminho, dados)
+
+
+# ---------------------------------------------------------------- novas validações
+def montar_validacao(duvida: str, causa: str, tratativa: str) -> str:
+    bloco = f"\n#### {' '.join(duvida.split())}\n\n"
+    if causa.strip():
+        bloco += f"**Causa:** {escapar_markdown(causa)}\n\n"
+    return bloco + f"**Solução:** {escapar_markdown(tratativa)}\n"
 
 
 def salvar_validacao(duvida: str, causa: str, tratativa: str) -> bool:
     """Acrescenta a validação na base. Retorna True se também foi gravada no GitHub."""
-    bloco = montar_validacao(duvida, causa, tratativa)
-    token = segredo("GITHUB_TOKEN")
-    if token:
-        # O GitHub é a fonte da verdade: o disco do Streamlit Cloud é apagado a cada reinício.
-        repo = segredo("GITHUB_REPO", "francineim/assistente-rejeicoes-nfe")
-        ramo = segredo("GITHUB_BRANCH", "main")
-        url = f"https://api.github.com/repos/{repo}/contents/{ARQUIVO_VALIDACOES.relative_to(PASTA).as_posix()}"
-        try:
-            atual = _github("GET", f"{url}?ref={ramo}", token)
-            conteudo, sha = base64.b64decode(atual["content"]).decode("utf-8"), atual["sha"]
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                raise
-            conteudo, sha = CABECALHO_VALIDACOES, None
-        novo = conteudo.rstrip("\n") + "\n" + bloco
-        dados = {
-            "message": f"Nova validação: {duvida.strip()[:60]}",
-            "content": base64.b64encode(novo.encode("utf-8")).decode(),
-            "branch": ramo,
-        }
-        if sha:
-            dados["sha"] = sha
-        _github("PUT", url, token, dados)
+    no_github = bool(segredo("GITHUB_TOKEN"))
+    if no_github:
+        conteudo, sha = github_ler(ARQUIVO_VALIDACOES)  # o repositório é a fonte da verdade
     else:
-        conteudo = ARQUIVO_VALIDACOES.read_text(encoding="utf-8") if ARQUIVO_VALIDACOES.exists() else CABECALHO_VALIDACOES
-        novo = conteudo.rstrip("\n") + "\n" + bloco
+        conteudo = ARQUIVO_VALIDACOES.read_text(encoding="utf-8") if ARQUIVO_VALIDACOES.exists() else None
+        sha = None
+    novo = (conteudo or CABECALHO_VALIDACOES).rstrip("\n") + "\n" + montar_validacao(duvida, causa, tratativa)
+    if no_github:
+        github_gravar(ARQUIVO_VALIDACOES, novo, f"Nova validação: {duvida.strip()[:60]}", sha)
     ARQUIVO_VALIDACOES.write_text(novo, encoding="utf-8")
-    return bool(token)
+    return no_github
+
+
+# ---------------------------------------------------------------- importação de documentos
+def importar_documento(nome: str, dados: bytes) -> int:
+    """Converte o arquivo numa base .md e grava. Retorna a quantidade de tópicos."""
+    nome_md, conteudo = converter(nome, dados)
+    destino = PASTA_BASES / nome_md
+    destino.write_text(conteudo, encoding="utf-8")
+    try:
+        _, topicos = carregar_topicos(destino, PASTA)
+        if not topicos:
+            raise ValueError("nenhum texto encontrado no arquivo (PDF digitalizado como imagem?)")
+        if segredo("GITHUB_TOKEN"):
+            _, sha = github_ler(destino)
+            github_gravar(destino, conteudo, f"Importa base: {nome}", sha)
+    except Exception:
+        destino.unlink(missing_ok=True)
+        raise
+    return len(topicos)
+
+
+@st.dialog("Importar documentos", width="large")
+def dialogo_importar():
+    st.markdown(
+        "Envie **Notas Técnicas em PDF**, planilhas **CSV**, arquivos **JSON**, **Markdown** ou **TXT**. "
+        "Cada arquivo vira uma nova base de consulta; reenviar um arquivo com o mesmo nome atualiza a base."
+    )
+    with st.expander("Como montar um CSV ou JSON de perguntas e respostas"):
+        st.markdown(
+            "Use as colunas (ou campos) **pergunta**, **causa** (opcional) e **resposta**. "
+            "Também são reconhecidos `dúvida`, `erro`, `código`, `solução` e `tratativa`. "
+            "As demais colunas aparecem como informação adicional na resposta.\n\n"
+            "```\npergunta;causa;resposta\nRejeição 999 - Campo X;O campo X está vazio;Preencha o campo X e reenvie\n```"
+        )
+    arquivos = st.file_uploader("Arquivos", type=FORMATOS, accept_multiple_files=True, label_visibility="collapsed")
+    if not st.button("Importar", type="primary", disabled=not arquivos, use_container_width=True):
+        return
+    importados, erros = [], []
+    with st.spinner("Importando e indexando..."):
+        for arquivo in arquivos:
+            try:
+                importados.append(f"{arquivo.name} ({importar_documento(arquivo.name, arquivo.getvalue())} tópicos)")
+            except Exception as e:
+                erros.append(f"- **{arquivo.name}**: {e}")
+    if importados:
+        carregar_motor.clear()
+        st.session_state.aviso = "Importado: " + "; ".join(importados) + (
+            "" if segredo("GITHUB_TOKEN") else ". Configure o GITHUB_TOKEN para manter após reinícios."
+        )
+    if erros:
+        st.error("Não foi possível importar:\n\n" + "\n".join(erros))
+        if importados:
+            st.success(st.session_state.aviso)
+        return
+    st.rerun()
 
 
 @st.dialog("Criar nova validação", width="large")
@@ -189,6 +253,8 @@ with st.sidebar:
     st.divider()
     if st.button("➕  Criar Nova Validação", type="primary", use_container_width=True):
         dialogo_nova_validacao()
+    if st.button("📥  Importar Documentos", use_container_width=True):
+        dialogo_importar()
     st.divider()
     st.markdown("**💡 Dicas de pesquisa**")
     st.markdown(
@@ -233,7 +299,7 @@ def render_topico(topico, destaque: bool):
     else:
         st.markdown('<div class="rotulo info">ℹ Orientação</div>', unsafe_allow_html=True)
         render_texto(topico.corpo, topico)
-    secao = "" if topico.secao == topico.titulo else f" › {escape(topico.secao)}"
+    secao = "" if topico.secao in ("", topico.titulo, topico.fonte) else f" › {escape(topico.secao)}"
     st.markdown(f'<div class="fonte">Fonte: {escape(topico.fonte)}{secao}</div>', unsafe_allow_html=True)
 
 

@@ -46,6 +46,18 @@ marque o app como privado e convide os e-mails autorizados.
 O botão **➕ Criar Nova Validação** (barra lateral) abre um formulário com dúvida, causa e
 tratativa. As validações são gravadas em `Validacoes_Cadastradas.md` e entram na pesquisa na hora.
 
+## Importação de documentos
+
+O botão **📥 Importar Documentos** aceita PDF (ex.: Notas Técnicas), CSV, JSON, Markdown e TXT.
+Cada arquivo vira uma base `Base_<nome>.md` (conversão em `importador.py`):
+
+- **CSV/JSON**: uma linha/registro por tópico; colunas `pergunta`, `causa` e `resposta`
+  (também `dúvida`, `erro`, `código`, `solução`, `tratativa`). Demais colunas aparecem como informação adicional.
+- **PDF/TXT**: dividido pelos títulos numerados (`1.`, `2.1`...) ou em trechos de ~300 palavras.
+  PDFs digitalizados (imagem) não têm texto e não podem ser importados.
+
+## Persistência
+
 Como o disco do Streamlit Cloud é apagado a cada reinício, configure em
 **Manage app → Settings → Secrets** para que o app grave o arquivo direto no GitHub:
 
