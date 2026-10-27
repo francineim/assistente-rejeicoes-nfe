@@ -1,12 +1,15 @@
 """Assistente de Rejeições de NF-e — chat de consulta à base de conhecimento COM_319."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import streamlit as st
 
 from busca import MotorBusca, carregar_topicos
 
-BASE = Path(__file__).parent / "data" / "COM_319_Geracao_Automatica_NFe.md"
+PASTA = Path(__file__).parent
+NOME_BASE = "COM_319_Geracao_Automatica_NFe.md"
 SCORE_MINIMO = 4.5      # abaixo disso consideramos que não há resposta na base
 SCORE_CONFIANTE = 8.0   # acima disso a resposta principal é exibida como "encontrada"
 
@@ -27,13 +30,33 @@ st.set_page_config(
 )
 
 
+def localizar_base() -> Path | None:
+    # Aceita a base em data/ ou na raiz do repositório (comum quando o upload
+    # pelo site do GitHub não preserva a pasta).
+    for caminho in (PASTA / "data" / NOME_BASE, PASTA / NOME_BASE):
+        if caminho.exists():
+            return caminho
+    candidatos = sorted(
+        p for p in [*PASTA.glob("data/*.md"), *PASTA.glob("*.md")] if p.name.lower() != "readme.md"
+    )
+    return candidatos[0] if candidatos else None
+
+
 @st.cache_resource
-def carregar_motor():
-    titulo, topicos = carregar_topicos(BASE)
+def carregar_motor(caminho: Path):
+    titulo, topicos = carregar_topicos(caminho)
     return titulo, topicos, MotorBusca(topicos)
 
 
-TITULO_BASE, TOPICOS, MOTOR = carregar_motor()
+BASE = localizar_base()
+if BASE is None:
+    st.error(
+        f"Base de conhecimento não encontrada. Envie o arquivo **{NOME_BASE}** "
+        "para a pasta `data/` (ou para a raiz) do repositório no GitHub."
+    )
+    st.stop()
+
+TITULO_BASE, TOPICOS, MOTOR = carregar_motor(BASE)
 
 # ---------------------------------------------------------------- estilo
 st.markdown(
