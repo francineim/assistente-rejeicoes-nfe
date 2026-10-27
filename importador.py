@@ -25,6 +25,8 @@ CAMPOS_SOLUCAO = ["resposta", "solucao", "tratativa", "orientacao", "procediment
                   "como resolver", "answer", "solution"]
 CAMPOS_CAUSA = ["causa", "motivo", "cause"]
 CAMPOS_CODIGO = ["codigo", "cod", "code", "cstat"]
+# O app é usado por vários clientes: colunas que identificam o cliente nunca entram na base.
+CAMPOS_OCULTOS = {"cliente", "clientes", "nome do cliente", "razao social", "empresa", "customer", "client"}
 
 # Títulos numerados de Notas Técnicas: "2.1 Regras de validação", "539 Rejeição: ..."
 CABECALHO_RE = re.compile(r"^\d+(\.\d+)*\.?\s+\S.{2,90}$")
@@ -36,7 +38,8 @@ def escapar_markdown(texto: str) -> str:
 
 
 def nome_base(titulo: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", normalizar(titulo)).strip("_") or "documento"
+    slug = re.sub(r"[^a-z0-9]+", "_", normalizar(titulo)).strip("_")
+    slug = re.sub(r"^base_", "", slug) or "documento"
     return f"Base_{slug}.md"
 
 
@@ -90,9 +93,15 @@ def texto_para_topicos(texto: str) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------- registros (CSV/JSON)
+def _chave(nome: str) -> str:
+    return normalizar(nome).strip().replace("_", " ")
+
+
 def _campo(registro: dict, nomes: list[str]) -> str | None:
-    chaves = {normalizar(k).strip().replace("_", " "): k for k in registro}
-    return next((chaves[n] for n in nomes if n in chaves), None)
+    # Nome exato primeiro; depois prefixo ("Solução proposta pela Conexos" -> solução).
+    chaves = {_chave(k): k for k in registro}
+    exato = next((chaves[n] for n in nomes if n in chaves), None)
+    return exato or next((k for n in nomes for c, k in chaves.items() if c.startswith(n + " ")), None)
 
 
 def _valor(v) -> str:
@@ -104,7 +113,10 @@ def registros_para_topicos(registros: list) -> list[tuple[str, str]]:
     for r in registros:
         if not isinstance(r, dict):
             r = {"descricao": r}
-        r = {str(k): v for k, v in r.items() if k is not None and _valor(v or "")}
+        r = {
+            str(k): v for k, v in r.items()
+            if k is not None and _chave(str(k)) not in CAMPOS_OCULTOS and _valor(v or "")
+        }
         if not r:
             continue
         k_titulo = _campo(r, CAMPOS_TITULO) or next(iter(r))
