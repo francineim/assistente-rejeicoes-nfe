@@ -1,20 +1,24 @@
-# Assistente de Rejeições de NF-e
+# Assistente de Faturamento
 
-Chat em Streamlit que consulta a base de conhecimento **COM_319 — Geração Automática de NF-e**
-e devolve a causa e a solução para rejeições da SEFAZ e erros de transmissão no ERP.
+Chat em Streamlit que consulta as bases de conhecimento do ERP e devolve a causa e a solução para:
+
+- rejeições da SEFAZ e erros de transmissão (**COM_319 — Geração Automática de NF-e**);
+- erros na **geração de Ordem de Faturamento (ODF)**, com as telas de cada erro.
 
 ## Estrutura
 
 ```
 app.py                  # interface (chat)
 busca.py                # leitura da base + motor de busca (BM25, sem dependências externas)
-data/COM_319_Geracao_Automatica_NFe.md   # base de conhecimento
+data/*.md              # bases de conhecimento (todas são carregadas)
+data/imagens/          # telas referenciadas nas bases
 requirements.txt
 .streamlit/config.toml  # tema visual
 ```
 
-Para atualizar a base, basta substituir/editar o arquivo `.md` em `data/` mantendo o padrão:
-um título `####` por erro, com os blocos `**Causa:**` e `**Solução:**`.
+Para incluir uma nova base, basta colocar outro arquivo `.md` em `data/` seguindo o padrão:
+um título (`##` a `####`) por erro, com os blocos `**Causa:**` e `**Solução:**`.
+Imagens entram com `![legenda](imagens/arquivo.png)` e o arquivo vai em `data/imagens/`.
 
 ## Rodar localmente
 

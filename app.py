@@ -1,15 +1,15 @@
-"""Assistente de Rejeições de NF-e — chat de consulta à base de conhecimento COM_319."""
+"""Assistente de Faturamento — chat de consulta às bases de conhecimento (NF-e e ODF)."""
 
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 import streamlit as st
 
-from busca import MotorBusca, carregar_topicos
+from busca import IMAGEM_RE, MotorBusca, carregar_bases
 
 PASTA = Path(__file__).parent
-NOME_BASE = "COM_319_Geracao_Automatica_NFe.md"
 SCORE_MINIMO = 4.5      # abaixo disso consideramos que não há resposta na base
 SCORE_CONFIANTE = 8.0   # acima disso a resposta principal é exibida como "encontrada"
 
@@ -17,46 +17,42 @@ EXEMPLOS = [
     "Rejeição 539 duplicidade de NF-e",
     "Nota travada em aguardando retorno",
     "Certificado digital vencido",
-    "IE do destinatário não cadastrada",
     "Total da NF difere do somatório dos itens",
-    "Erro de timeout na transmissão do lote",
+    "Nenhum item com saldo para gerar a ODF",
+    "Falta o tipo de operação no processo",
 ]
 
 st.set_page_config(
-    page_title="Assistente de Rejeições NF-e",
+    page_title="Assistente de Faturamento",
     page_icon="🧾",
     layout="centered",
     initial_sidebar_state="expanded",
 )
 
 
-def localizar_base() -> Path | None:
-    # Aceita a base em data/ ou na raiz do repositório (comum quando o upload
-    # pelo site do GitHub não preserva a pasta).
-    for caminho in (PASTA / "data" / NOME_BASE, PASTA / NOME_BASE):
-        if caminho.exists():
-            return caminho
-    candidatos = sorted(
-        p for p in [*PASTA.glob("data/*.md"), *PASTA.glob("*.md")] if p.name.lower() != "readme.md"
-    )
-    return candidatos[0] if candidatos else None
+def localizar_bases() -> list[Path]:
+    # Todas as bases .md em data/ e, se houver, na raiz do repositório (comum quando
+    # o upload pelo site do GitHub não preserva a pasta). Cada arquivo entra uma vez.
+    vistos, bases = set(), []
+    for caminho in sorted(PASTA.glob("data/*.md")) + sorted(PASTA.glob("*.md")):
+        if caminho.name.lower() != "readme.md" and caminho.name not in vistos:
+            vistos.add(caminho.name)
+            bases.append(caminho)
+    return bases
 
 
 @st.cache_resource
-def carregar_motor(caminho: Path):
-    titulo, topicos = carregar_topicos(caminho)
-    return titulo, topicos, MotorBusca(topicos)
+def carregar_motor(caminhos: tuple[Path, ...]):
+    titulos, topicos = carregar_bases(list(caminhos), PASTA)
+    return titulos, topicos, MotorBusca(topicos)
 
 
-BASE = localizar_base()
-if BASE is None:
-    st.error(
-        f"Base de conhecimento não encontrada. Envie o arquivo **{NOME_BASE}** "
-        "para a pasta `data/` (ou para a raiz) do repositório no GitHub."
-    )
+BASES = localizar_bases()
+if not BASES:
+    st.error("Nenhuma base de conhecimento encontrada. Envie os arquivos `.md` para a pasta `data/` do repositório.")
     st.stop()
 
-TITULO_BASE, TOPICOS, MOTOR = carregar_motor(BASE)
+TITULOS_BASES, TOPICOS, MOTOR = carregar_motor(tuple(BASES))
 
 # ---------------------------------------------------------------- estilo
 st.markdown(
@@ -106,8 +102,8 @@ def perguntar(texto: str):
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.markdown("### 🧾 Assistente NF-e")
-    st.caption("Consulta de rejeições e erros de transmissão de NF-e no ERP.")
+    st.markdown("### 🧾 Assistente de Faturamento")
+    st.caption("Rejeições de NF-e e erros na geração de Ordem de Faturamento (ODF) no ERP.")
     erros = sum(t.eh_erro for t in TOPICOS)
     c1, c2 = st.columns(2)
     c1.metric("Erros", erros)
@@ -123,24 +119,41 @@ with st.sidebar:
     if st.button("🗑️  Limpar conversa", use_container_width=True):
         st.session_state.mensagens = []
         st.rerun()
-    st.caption(f"Base: {TITULO_BASE}")
+    st.caption("Bases: " + " · ".join(TITULOS_BASES))
 
 # ---------------------------------------------------------------- render
+def render_texto(texto: str, topico):
+    """Exibe o markdown do tópico, trocando as referências de imagem pelas telas."""
+    pos = 0
+    for m in IMAGEM_RE.finditer(texto):
+        if texto[pos : m.start()].strip():
+            st.markdown(texto[pos : m.start()])
+        arquivo = topico.imagens.get(m.group(2))
+        if arquivo:
+            st.image(str(arquivo), caption=m.group(1) or None)
+        pos = m.end()
+    if texto[pos:].strip():
+        st.markdown(texto[pos:])
+
+
 def render_topico(topico, destaque: bool):
     if destaque:
-        st.markdown(f'<div class="titulo-resp">{topico.titulo}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="titulo-resp">{escape(topico.titulo_limpo)}</div>', unsafe_allow_html=True)
     causa, solucao = topico.causa, topico.solucao
     if causa or solucao:
+        if topico.introducao:
+            render_texto(topico.introducao, topico)
         if causa:
             st.markdown('<div class="rotulo causa">⚠ Causa</div>', unsafe_allow_html=True)
-            st.markdown(causa)
+            render_texto(causa, topico)
         if solucao:
             st.markdown('<div class="rotulo solucao">✔ Como resolver</div>', unsafe_allow_html=True)
-            st.markdown(solucao)
+            render_texto(solucao, topico)
     else:
         st.markdown('<div class="rotulo info">ℹ Orientação</div>', unsafe_allow_html=True)
-        st.markdown(topico.corpo)
-    st.markdown(f'<div class="fonte">Fonte: {TITULO_BASE} › {topico.secao}</div>', unsafe_allow_html=True)
+        render_texto(topico.corpo, topico)
+    secao = "" if topico.secao == topico.titulo else f" › {escape(topico.secao)}"
+    st.markdown(f'<div class="fonte">Fonte: {escape(topico.fonte)}{secao}</div>', unsafe_allow_html=True)
 
 
 def render_resposta(msg):
@@ -163,7 +176,7 @@ def render_resposta(msg):
     if relacionados:
         st.markdown("**Tópicos relacionados**")
         for t, _ in relacionados:
-            with st.expander(t.titulo):
+            with st.expander(t.titulo_limpo):
                 render_topico(t, destaque=False)
 
 
@@ -171,9 +184,9 @@ def render_resposta(msg):
 st.markdown(
     """
 <div class="hero">
-  <span class="tag">COM_319 · Geração Automática de NF-e</span>
-  <h1>Assistente de Rejeições de NF-e</h1>
-  <p>Descreva a rejeição ou o erro retornado pela SEFAZ e veja a causa e o passo a passo para resolver.</p>
+  <span class="tag">Faturamento · NF-e · Ordem de Faturamento</span>
+  <h1>Assistente de Faturamento</h1>
+  <p>Descreva a rejeição da SEFAZ ou o erro na geração da ODF e veja a causa e o passo a passo para resolver.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -192,7 +205,7 @@ for msg in st.session_state.mensagens:
         else:
             render_resposta(msg)
 
-pergunta = st.chat_input("Ex.: Rejeição 610 — total da NF difere do somatório...")
+pergunta = st.chat_input("Ex.: Rejeição 610 ou \"falta o tipo de operação no processo\"")
 if st.session_state.pendente:
     pergunta, st.session_state.pendente = st.session_state.pendente, None
 

@@ -54,13 +54,20 @@ def tokenizar(texto: str, remover_stop: bool = True) -> list[str]:
     return [_radical(t) for t in tokens if len(t) > 1]
 
 
+IMAGEM_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+IGNORAR_SECOES = {"índice", "indice"}
+ROTULOS = r"Causa|Solução|Informações|Contexto|Mensagem apresentada"
+
+
 @dataclass
 class Topico:
     id: int
     titulo: str
     secao: str
     corpo: str
+    fonte: str = ""
     codigos: set[str] = field(default_factory=set)
+    imagens: dict[str, Path] = field(default_factory=dict)  # caminho no .md -> arquivo
 
     @property
     def causa(self) -> str | None:
@@ -71,25 +78,41 @@ class Topico:
         return _extrair_bloco(self.corpo, "Solução")
 
     @property
+    def introducao(self) -> str:
+        # Texto antes do primeiro bloco Causa/Solução (mensagem exibida, telas do erro).
+        m = re.search(r"\*\*(Causa|Solução):?\*\*", self.corpo)
+        return (self.corpo[: m.start()] if m else "").strip()
+
+    @property
     def eh_erro(self) -> bool:
         return self.causa is not None or self.solucao is not None
 
     @property
     def titulo_limpo(self) -> str:
-        t = re.sub(r"^(Mensagem( de [Ee]rro)?|Erro referente|Erro|ERRO|Situação de erro|Mensagem apresentada \(ERRO\))\s*:\s*", "", self.titulo)
+        t = re.sub(r"^\d+\.\s+", "", self.titulo)
+        t = re.sub(r"^(Mensagem( de [Ee]rro)?|Erro referente|Erro|ERRO|Situação de erro|Mensagem apresentada \(ERRO\))\s*:\s*", "", t)
         return t.strip().strip('"')
 
 
 def _extrair_bloco(corpo: str, rotulo: str) -> str | None:
     padrao = re.compile(
-        rf"\*\*{rotulo}:?\*\*:?\s*(.*?)(?=\n\*\*(Causa|Solução|Informações):?\*\*|\Z)",
+        rf"\*\*{rotulo}:?\*\*:?\s*(.*?)(?=\n\*\*({ROTULOS}):?\*\*|\Z)",
         re.S,
     )
     m = padrao.search(corpo)
     return m.group(1).strip() if m else None
 
 
-def carregar_topicos(caminho: Path) -> tuple[str, list[Topico]]:
+def _resolver_imagem(ref: str, pasta_md: Path, raiz: Path) -> Path | None:
+    caminho = pasta_md / ref
+    if caminho.exists():
+        return caminho
+    # Upload pelo site do GitHub pode achatar pastas: procura pelo nome do arquivo.
+    return next(raiz.rglob(Path(ref).name), None)
+
+
+def carregar_topicos(caminho: Path, raiz: Path | None = None, inicio: int = 0) -> tuple[str, list[Topico]]:
+    raiz = raiz or caminho.parent
     linhas = caminho.read_text(encoding="utf-8").splitlines()
     titulo_doc = "Base de conhecimento"
     topicos: list[Topico] = []
@@ -98,12 +121,20 @@ def carregar_topicos(caminho: Path) -> tuple[str, list[Topico]]:
     buffer: list[str] = []
 
     def fechar():
-        if titulo_atual is None:
+        if titulo_atual is None or normalizar(titulo_atual) in IGNORAR_SECOES:
             return
-        corpo = "\n".join(buffer).strip()
-        if corpo:
-            codigos = set(CODIGO_RE.findall(titulo_atual))
-            topicos.append(Topico(len(topicos), titulo_atual, secao_atual, corpo, codigos))
+        corpo = "\n".join(l for l in buffer if l.strip() != "---").strip()
+        if not corpo:
+            return
+        imagens = {}
+        for _, ref in IMAGEM_RE.findall(corpo):
+            arquivo = _resolver_imagem(ref, caminho.parent, raiz)
+            if arquivo:
+                imagens[ref] = arquivo
+        codigos = set(CODIGO_RE.findall(titulo_atual))
+        topicos.append(
+            Topico(inicio + len(topicos), titulo_atual, secao_atual, corpo, titulo_doc, codigos, imagens)
+        )
 
     for linha in linhas:
         m = re.match(r"^(#{1,6})\s+(.*)$", linha)
@@ -123,6 +154,15 @@ def carregar_topicos(caminho: Path) -> tuple[str, list[Topico]]:
     return titulo_doc, topicos
 
 
+def carregar_bases(caminhos: list[Path], raiz: Path) -> tuple[list[str], list[Topico]]:
+    titulos, topicos = [], []
+    for caminho in caminhos:
+        titulo, novos = carregar_topicos(caminho, raiz, inicio=len(topicos))
+        titulos.append(titulo)
+        topicos.extend(novos)
+    return titulos, topicos
+
+
 class MotorBusca:
     """BM25 sobre título (peso maior) + corpo, com correção de digitação."""
 
@@ -132,7 +172,7 @@ class MotorBusca:
         self.topicos = topicos
         self.docs: list[Counter] = []
         for t in topicos:
-            tokens = tokenizar(t.titulo) * self.PESO_TITULO + tokenizar(t.corpo)
+            tokens = tokenizar(t.titulo) * self.PESO_TITULO + tokenizar(IMAGEM_RE.sub(r"\1", t.corpo))
             self.docs.append(Counter(tokens))
         self.tam_medio = sum(sum(d.values()) for d in self.docs) / max(len(self.docs), 1)
         df = Counter()
