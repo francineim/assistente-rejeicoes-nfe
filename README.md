@@ -40,3 +40,15 @@ streamlit run app.py
 
 Para restringir o acesso a pessoas da empresa, em **Settings → Sharing** do app,
 marque o app como privado e convide os e-mails autorizados.
+
+## Cadastro de novas validações
+
+O botão **➕ Criar Nova Validação** (barra lateral) abre um formulário com dúvida, causa e
+tratativa. As validações são gravadas em `Validacoes_Cadastradas.md` e entram na pesquisa na hora.
+
+Como o disco do Streamlit Cloud é apagado a cada reinício, configure em
+**Manage app → Settings → Secrets** para que o app grave o arquivo direto no GitHub:
+
+```toml
+GITHUB_TOKEN = "github_pat_..."   # token com permissão Contents: Read and write neste repositório
+```

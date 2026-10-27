@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import urllib.error
+import urllib.request
 from html import escape
 from pathlib import Path
 
@@ -13,6 +17,10 @@ PASTA = Path(__file__).parent
 SCORE_MINIMO = 4.5      # abaixo disso consideramos que não há resposta na base
 SCORE_CONFIANTE = 8.0   # acima disso a resposta principal é exibida como "encontrada"
 TITULO_APP = "Assistente Dúvidas Faturamento"
+
+# Validações criadas pelo app ficam numa base própria, ao lado das demais.
+ARQUIVO_VALIDACOES = (PASTA / "data" if (PASTA / "data").is_dir() else PASTA) / "Validacoes_Cadastradas.md"
+CABECALHO_VALIDACOES = "# Validações cadastradas\n\n## Validações cadastradas pela equipe\n"
 
 st.set_page_config(
     page_title=TITULO_APP,
@@ -45,6 +53,94 @@ if not BASES:
     st.stop()
 
 TITULOS_BASES, TOPICOS, MOTOR = carregar_motor(tuple(BASES))
+
+
+# ---------------------------------------------------------------- novas validações
+def segredo(nome: str, padrao=None):
+    try:
+        return st.secrets.get(nome, padrao)
+    except Exception:  # sem secrets.toml (execução local)
+        return padrao
+
+
+def montar_validacao(duvida: str, causa: str, tratativa: str) -> str:
+    def limpar(texto: str) -> str:
+        # Linha começando com "#" viraria um novo tópico na base: escapa.
+        return "\n".join("\\" + l.lstrip() if l.lstrip().startswith("#") else l for l in texto.strip().splitlines())
+
+    bloco = f"\n#### {' '.join(duvida.split())}\n\n"
+    if causa.strip():
+        bloco += f"**Causa:** {limpar(causa)}\n\n"
+    return bloco + f"**Solução:** {limpar(tratativa)}\n"
+
+
+def _github(metodo: str, url: str, token: str, dados: dict | None = None) -> dict:
+    req = urllib.request.Request(
+        url,
+        method=metodo,
+        data=json.dumps(dados).encode() if dados else None,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.load(resp)
+
+
+def salvar_validacao(duvida: str, causa: str, tratativa: str) -> bool:
+    """Acrescenta a validação na base. Retorna True se também foi gravada no GitHub."""
+    bloco = montar_validacao(duvida, causa, tratativa)
+    token = segredo("GITHUB_TOKEN")
+    if token:
+        # O GitHub é a fonte da verdade: o disco do Streamlit Cloud é apagado a cada reinício.
+        repo = segredo("GITHUB_REPO", "francineim/assistente-rejeicoes-nfe")
+        ramo = segredo("GITHUB_BRANCH", "main")
+        url = f"https://api.github.com/repos/{repo}/contents/{ARQUIVO_VALIDACOES.relative_to(PASTA).as_posix()}"
+        try:
+            atual = _github("GET", f"{url}?ref={ramo}", token)
+            conteudo, sha = base64.b64decode(atual["content"]).decode("utf-8"), atual["sha"]
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            conteudo, sha = CABECALHO_VALIDACOES, None
+        novo = conteudo.rstrip("\n") + "\n" + bloco
+        dados = {
+            "message": f"Nova validação: {duvida.strip()[:60]}",
+            "content": base64.b64encode(novo.encode("utf-8")).decode(),
+            "branch": ramo,
+        }
+        if sha:
+            dados["sha"] = sha
+        _github("PUT", url, token, dados)
+    else:
+        conteudo = ARQUIVO_VALIDACOES.read_text(encoding="utf-8") if ARQUIVO_VALIDACOES.exists() else CABECALHO_VALIDACOES
+        novo = conteudo.rstrip("\n") + "\n" + bloco
+    ARQUIVO_VALIDACOES.write_text(novo, encoding="utf-8")
+    return bool(token)
+
+
+@st.dialog("Criar nova validação", width="large")
+def dialogo_nova_validacao():
+    with st.form("form_validacao", border=False):
+        duvida = st.text_input("Dúvida / mensagem de erro *", placeholder="Ex.: Rejeição 999 — Campo X inválido")
+        causa = st.text_area("Causa (opcional)", placeholder="Por que o problema acontece")
+        tratativa = st.text_area("Tratativa *", height=200, placeholder="Passo a passo para resolver")
+        enviar = st.form_submit_button("Salvar validação", type="primary", use_container_width=True)
+    if not enviar:
+        return
+    if not duvida.strip() or not tratativa.strip():
+        st.error("Preencha a dúvida e a tratativa.")
+        return
+    try:
+        no_github = salvar_validacao(duvida, causa, tratativa)
+    except Exception as e:
+        st.error(f"Não foi possível salvar a validação: {e}")
+        return
+    carregar_motor.clear()
+    st.session_state.aviso = (
+        "Validação salva e já disponível na pesquisa."
+        if no_github
+        else "Validação salva neste servidor. Configure o GITHUB_TOKEN para mantê-la após reinícios."
+    )
+    st.rerun()
 
 # ---------------------------------------------------------------- estilo
 st.markdown(
@@ -84,10 +180,15 @@ html, body, [class*="css"], .stMarkdown, .stChatInput textarea { font-family: 'I
 # ---------------------------------------------------------------- estado
 if "mensagens" not in st.session_state:
     st.session_state.mensagens = []
+if aviso := st.session_state.pop("aviso", None):
+    st.toast(aviso, icon="✅")
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.markdown(f"### 🧾 {TITULO_APP}")
+    st.divider()
+    if st.button("➕  Criar Nova Validação", type="primary", use_container_width=True):
+        dialogo_nova_validacao()
     st.divider()
     st.markdown("**💡 Dicas de pesquisa**")
     st.markdown(
@@ -171,7 +272,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if not st.session_state.mensagens:
+pergunta = st.chat_input("Digite sua dúvida...")  # fica fixo no rodapé, onde quer que seja chamado
+
+if not st.session_state.mensagens and not pergunta:
     st.markdown('<div class="vazio">Olá, faça a sua pergunta!</div>', unsafe_allow_html=True)
 
 for msg in st.session_state.mensagens:
@@ -181,7 +284,6 @@ for msg in st.session_state.mensagens:
         else:
             render_resposta(msg)
 
-pergunta = st.chat_input("Digite sua dúvida...")
 
 if pergunta:
     st.session_state.mensagens.append({"role": "user", "content": pergunta})
