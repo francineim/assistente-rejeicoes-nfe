@@ -12,18 +12,10 @@ from busca import IMAGEM_RE, MotorBusca, carregar_bases
 PASTA = Path(__file__).parent
 SCORE_MINIMO = 4.5      # abaixo disso consideramos que não há resposta na base
 SCORE_CONFIANTE = 8.0   # acima disso a resposta principal é exibida como "encontrada"
-
-EXEMPLOS = [
-    "Rejeição 539 duplicidade de NF-e",
-    "Nota travada em aguardando retorno",
-    "Certificado digital vencido",
-    "Total da NF difere do somatório dos itens",
-    "Nenhum item com saldo para gerar a ODF",
-    "Falta o tipo de operação no processo",
-]
+TITULO_APP = "Assistente Dúvidas Faturamento"
 
 st.set_page_config(
-    page_title="Assistente de Faturamento",
+    page_title=TITULO_APP,
     page_icon="🧾",
     layout="centered",
     initial_sidebar_state="expanded",
@@ -81,7 +73,7 @@ html, body, [class*="css"], .stMarkdown, .stChatInput textarea { font-family: 'I
 .rotulo.solucao { color: #047857; }
 .rotulo.info    { color: #1F6FEB; }
 .fonte { font-size: .78rem; color: #6B7280; margin-top: .4rem; }
-.vazio { text-align: center; color: #6B7280; margin: 1.2rem 0 .8rem 0; font-size: .95rem; }
+.vazio { text-align: center; color: #0B2545; margin: 2rem 0 1rem 0; font-size: 1.25rem; font-weight: 600; }
 [data-testid="stSidebar"] { background: #F5F7FB; }
 @media (prefers-color-scheme: dark) { [data-testid="stSidebar"] { background: inherit; } }
 </style>
@@ -92,24 +84,12 @@ html, body, [class*="css"], .stMarkdown, .stChatInput textarea { font-family: 'I
 # ---------------------------------------------------------------- estado
 if "mensagens" not in st.session_state:
     st.session_state.mensagens = []
-if "pendente" not in st.session_state:
-    st.session_state.pendente = None
-
-
-def perguntar(texto: str):
-    st.session_state.pendente = texto
-
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.markdown("### 🧾 Assistente de Faturamento")
-    st.caption("Rejeições de NF-e e erros na geração de Ordem de Faturamento (ODF) no ERP.")
-    erros = sum(t.eh_erro for t in TOPICOS)
-    c1, c2 = st.columns(2)
-    c1.metric("Erros", erros)
-    c2.metric("Tópicos", len(TOPICOS))
+    st.markdown(f"### 🧾 {TITULO_APP}")
     st.divider()
-    st.markdown("**Dicas de pesquisa**")
+    st.markdown("**💡 Dicas de pesquisa**")
     st.markdown(
         "- Informe o **código da rejeição** (ex.: `610`)\n"
         "- Ou cole a **mensagem de erro** exibida\n"
@@ -184,19 +164,15 @@ def render_resposta(msg):
 st.markdown(
     """
 <div class="hero">
-  <span class="tag">Faturamento · NF-e · Ordem de Faturamento</span>
-  <h1>Assistente de Faturamento</h1>
-  <p>Descreva a rejeição da SEFAZ ou o erro na geração da ODF e veja a causa e o passo a passo para resolver.</p>
+  <h1>Assistente Dúvidas Faturamento</h1>
+  <p>Descreva a sua dúvida ou rejeição.</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-if not st.session_state.mensagens and not st.session_state.pendente:
-    st.markdown('<div class="vazio">Comece com uma pergunta ou escolha um exemplo:</div>', unsafe_allow_html=True)
-    cols = st.columns(2)
-    for i, ex in enumerate(EXEMPLOS):
-        cols[i % 2].button(ex, key=f"ex{i}", on_click=perguntar, args=(ex,), use_container_width=True)
+if not st.session_state.mensagens:
+    st.markdown('<div class="vazio">Olá, faça a sua pergunta!</div>', unsafe_allow_html=True)
 
 for msg in st.session_state.mensagens:
     with st.chat_message(msg["role"], avatar="🧑‍💼" if msg["role"] == "user" else "🧾"):
@@ -205,9 +181,7 @@ for msg in st.session_state.mensagens:
         else:
             render_resposta(msg)
 
-pergunta = st.chat_input("Ex.: Rejeição 610 ou \"falta o tipo de operação no processo\"")
-if st.session_state.pendente:
-    pergunta, st.session_state.pendente = st.session_state.pendente, None
+pergunta = st.chat_input("Digite sua dúvida...")
 
 if pergunta:
     st.session_state.mensagens.append({"role": "user", "content": pergunta})
