@@ -15,3 +15,7 @@ Estorno de venda: Quando a nota original nao pode ser cancelada no prazo legal e
 Ou seja, o estorno é total da nota fiscal original, dessa forma, o vinculo deve ser feito em Documentos Relacionados > quadro "DOCUMENTO RETORNO".
 
 Para um movimento parcial, deve ser feita uma nota fiscal de devoluçao.
+
+#### remessa para industrialização
+
+**Solução:** Utilizar o CFOP 5924
